@@ -1,0 +1,544 @@
+---
+title: "Homework 2"
+author: "Davide Berasi"
+date: "2023-05-27"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE}
+library(latex2exp)
+```
+
+# Exercise 1: Estimating a log-odds with a normal prior
+
+Suppose $Y$ has a binomial distribution with parameters $n$ and $p$, and we are interesting in the log-odds value $\theta=\operatorname{logit}(p) = \log(p/(1-p))$. Our prior for $\theta$ is that $\theta \sim N(\mu, \sigma)$ (parametrized as mean and standard deviation). It follows that the posterior density of $\theta$ is given, up to a proportional constant, by
+
+$$
+g(\theta \vert y) \propto \frac{\exp(y\theta)}{(1+\exp(\theta))^n} \exp\left[ -\frac{(\theta-\mu)^2}{2 \sigma^2} \right]
+$$  
+
+More concretely, suppose we are interested in learning about the probability that a special coin lands heads when tossed. A priori we believe that the coin is fair, so we assign $\theta$ an $N(0, .25)$ prior. We toss the coin $n=5$ times and obtain $y=5$ heads.
+
+> - Using the prior density as a proposal density, design an Accept-Reject algorithm for sampling from the posterior distribution. Using simulated draws from your algorithm, approximate the probability that the coin is biased toward heads.
+
+Let $q \sim N(0, 25)$ be our prior distribution and let $\bar{g}$ be the kernel of our target distribution, that is:
+$$
+g(\theta \vert y) \propto \frac{\exp(y\theta)}{(1+\exp(\theta))^n} \exp\left[ -\frac{(\theta-\mu)^2}{2 \sigma^2} \right] =: \bar{g}
+$$ 
+In order to implement the accept-reject sampling algorithm we need a constant $M$ such that $\bar{g} \le Mq$. Since $y\le n$, we have that:
+$$
+\bar{g} = \left(\frac{\exp(\theta)}{1+\exp(\theta)}\right)^y \frac{1}{(1+\exp(\theta))^{n-y}} \exp\left[ -\frac{(\theta-\mu)^2}{2 \sigma^2} \right] \le 1 \cdot \exp\left[ -\frac{(\theta-\mu)^2}{2 \sigma^2} \right] = \sqrt{2\pi} \sigma \cdot q
+$$
+Thus we can take $M = \sqrt{2\pi} \sigma \approx$ `r sqrt(2*pi)*0.25`. Here is the implementation of the algorithm:
+```{r}
+g_bar <- function(t, y=5){
+  return ( (exp(y*t -((t/0.25)**2) / 2 ) / (1+exp(t))**5) )
+}
+
+sampler_AR <- function(N){
+  # returns N samples from our posterior distribution g.
+  M <- sqrt(2*pi)*0.25
+  samples <- rep(0, N)
+  num_samples <- 0
+  while (num_samples < N) {
+    t <- rnorm(1, mean=0, sd=0.25)
+    u <- runif(1)
+    if (u * M*dnorm(t, mean=0, sd=0.25) < g_bar(t)){
+      num_samples <- num_samples + 1
+      samples[num_samples] <- t
+    }
+  }
+  return(samples)
+}
+```
+
+To visualize how good the algorithm is, we can compare the histogram of the samples with the posterior density.
+```{r}
+N <- 10000
+g_AR <-  sampler_AR(N)
+hist(g_AR, main = 'AR sampler', xlab=TeX(r"($\theta$)"), breaks = 50, freq = FALSE)
+
+# We approximate the normalizing constant by integrating.
+norm_const <- integrate(function(t) g_bar(t,5),-Inf, Inf)$value
+tt <- seq(min(g_AR), max(g_AR), 0.01)
+g_tt <- g_bar(tt) / norm_const
+lines(tt, g_tt, col='red', lwd=2)
+```
+
+Given $N$ samples $(\theta_1, \dots, \theta_N)$ from the posterior distribution, a good approximation of the probability that the coin is biased towards head is:
+
+$$
+\mathbf{P}(\theta > 0 | Y=5) \approx \frac{1}{n}\sum_{i=1}^{N}\mathbf{1}(\theta_i>0)
+$$
+
+Using $N=$ `r N` samples from the accept-reject algorithm, our approximation is:
+```{r}
+sum(g_AR > 0) / N
+```
+
+We can also approximate a $95\%$ confidence interval for $\theta$ with $[g_{0.025}, g_{0.975}]$, where $g_{0.025}, g_{0.975}$ are the 0.025 and 0.975 quantile for our sample.
+```{r}
+quantile(g_AR, c(0.025, 0.975))
+```
+
+
+> - Using the prior density as a proposal density, simulate from the posterior distribution using a Sampling Importance Resampling (SIR) algorithm. Approximate the probability that the coin is biased toward heads.
+
+The SIR sampler is very easy to implement:
+```{r}
+sampler_SIR <- function(N){
+  # Sampling
+  t <- rnorm(N, mean=0, sd=0.25)
+  # Importance
+  w <- g_bar(t) / dnorm(t, mean=0, sd=0.25)
+  w <- w / sum(w)
+  # Resampling
+  t <- sample(t, size=N, replace=TRUE, prob=w)
+return(t)
+}
+```
+
+As before we can visualize how good the SIR algorithm is.
+```{r}
+g_SIR <-  sampler_AR(N)
+hist(g_SIR, main = 'SIR sampler', xlab=TeX(r"($\theta$)"), breaks = 50, freq = FALSE)
+
+tt <- seq(min(g_SIR), max(g_SIR), 0.01)
+g_tt <- g_bar(tt) / norm_const
+lines(tt, g_tt, col='red', lwd=2)
+```
+
+Using the SIR sampler, the approximation of the probability that the coin is biased towards head is:
+```{r}
+g_SIR <- sampler_SIR(N)
+sum(g_SIR > 0) / N
+```
+In this case the approximation for a $95\%$ confidence interval for $\theta$ is:
+```{r}
+quantile(g_SIR, c(0.025, 0.975))
+```
+> - Use a Laplace approximation to estimate the probability that the coin is biased toward heads.
+
+In the Laplace approximation we approximate our posterior $g$ with the "best fitting" normal $\mathcal{N}(m, v)$.
+Its mean is the mode $m$ of $g$. We can compute it numerically.
+```{r}
+# To compute the maximum we can use the function optimize.
+m <- optimize(g_bar, c(0, 0.5), maximum = TRUE)$maximum
+m
+```
+For the standard deviation $v$ we know that 
+$$
+-\frac{1}{v^2} = \left. \frac{d^2}{d\theta^2}\log(g(\theta)) \right\vert_{\theta=m} = - n \frac{\exp(m)}{(1+ \exp(m))^2} - \frac{1}{\sigma^2}
+$$
+Thus we can approximate it:
+```{r}
+d2_log_g <- -5*exp(m) / (1 + exp(m))^2 - 1/0.25^2
+v <- sqrt(-1/d2_log_g)
+v
+```
+
+With Laplace approximation, the probability that the coin is biased towards head is:
+```{r}
+pnorm(0, mean=m, sd=v, lower.tail=FALSE)
+```
+
+In this case the approximation for a $95\%$ confidence interval for $\theta$ is:
+```{r}
+qnorm(c(0.025, 0.975), mean=m, sd=v)
+```
+
+#  Exercise 2: Genetic linkage model
+
+Suppose $197$ animals are distributed into four categories with the following frequencies
+
+```{r echo=FALSE}
+library(knitr)  
+x <- 1:4
+y <- c(125,18,20,34)  
+d <- data.frame(x,y)
+names(d) <- c("Category", "Frequency")
+knitr::kable(d)  
+```
+
+Assume that the probabilities of the four categories are given by the vector
+  
+$$  
+\left( \frac{1}{2} + \frac{\theta}{4}, \frac{1}{4} (1 - \theta),  \frac{1}{4} (1 - \theta), \frac{\theta}{4} \right) \ ,
+$$
+  
+where $\theta$ is an unknown parameter between $0$ and $1$. If $\theta$ is assigned a uniform prior, then the posterior density of $\theta$ is given by
+
+$$  
+h(\theta  \vert  \text{data}) \propto \left( \frac{1}{2} + \frac{\theta}{4} \right)^{125} \left( \frac{1}{4} (1 - \theta) \right)^{18} \left( \frac{1}{4} (1 - \theta) \right)^{20} \left( \frac{\theta}{4} \right)^{34} \ ,
+$$
+  
+where $0 < \theta < 1$.
+
+> - If $\theta$ is transformed to the real-valued logit $\eta = \log(\theta/(1 - \theta))$, then calculate the posterior density of $\eta$.
+
+The distribution of $\eta \vert \text{data}$ is $g(\eta \vert \text{data}) = h(\theta \vert \text{data}) \left\lvert \frac{d}{d\eta} \theta(\eta))\right\lvert$. Since
+$$
+\theta(\eta) = \frac{\exp(\eta)}{1+\exp(\eta)} \hspace{1cm} \text{and} \hspace{1cm} \left\lvert \frac{d}{d\eta} \theta(\eta)\right\lvert = \frac{\exp(\eta)}{(1+\exp(\eta))^2}
+$$
+
+the posterior of $\eta$ is
+
+\begin{equation}
+\begin{aligned}
+g(\eta \vert \text{data}) & \propto \left( \frac{1}{2} +\frac{\exp(\eta)}{4(1+\exp(\eta))} \right)^{125}
+\left( \frac{1}{4} \left(1 - \frac{\exp(\eta)}{1+\exp(\eta)}\right) \right)^{18}
+\left( \frac{1}{4} \left(1 - \frac{\exp(\eta)}{1+\exp(\eta)}\right) \right)^{20}
+\left( \frac{\exp(\eta)}{4(1+\exp(\eta))} \right)^{34} \frac{\exp(\eta)}{(1+\exp(\eta))^2} \\
+& = \left( \frac{2 + 3\exp(\eta)}{4(1+\exp(\eta))} \right)^{125}
+\left( \frac{1}{4(1+\exp(\eta))} \right)^{18}
+\left( \frac{1}{4(1+\exp(\eta))} \right)^{20}
+\left( \frac{\exp(\eta)}{4(1+\exp(\eta))} \right)^{34} \frac{\exp(\eta)}{(1+\exp(\eta))^2} \\
+& \propto \frac{(2+3\exp(\eta))^{125}\exp(35\eta)}{(1+\exp(\eta))^{199}} =: \bar{g}(\eta)
+\end{aligned}
+\end{equation}
+
+We can plot it:
+```{r}
+# The kernel defined as above takes very small values. In order to avoid problems with the float precision, I multiply it by 10^91.
+g_bar2 <- function(e){
+log_num <- 125*log(2+3*exp(e))+35*e + 91*log(10)
+log_den <- 197*log(4)+199*log(1+exp(e))
+return(exp(log_num-log_den))
+}
+
+ee <- seq(-2, 2, 0.001)
+plot(ee, g_bar2(ee), type='l', lwd=2, xlab=TeX(r"($\eta$)"), ylab=TeX(r"($\bar{g}(\eta)$)"))
+```
+
+> - Use a normal approximation to find a $95\%$ probability interval for $\eta$. Transform this interval to obtain a $95\%$ probability interval for the original parameter of interest $\theta$.
+
+As in Exercise 1, a normal approximation is given by the Laplace approximation $\mathcal{N}(m, v)$.
+In this case the mean is
+```{r}
+m <- optimize(g_bar2, c(0, 1), maximum = TRUE)$maximum
+m
+```
+
+while for the standard deviation we compute the second derivative of $\log(g(\eta \vert \text{data}))$ symbolically and evaluate it in $m$
+```{r}
+log_g = expression(125*log(2+3*exp(eta)) + 35*eta - 199*log(1+exp(eta)))
+d2_log_g <- D(D(log_g, 'eta'), 'eta')
+eta <- m
+v <- sqrt(-1 / eval(d2_log_g))  # sd of of our normal approximation
+v
+```
+Thus, the approximation of the $95\%$ confidence interval for $\eta$ is
+```{r}
+I_eta <- qnorm(c(0.025, 0.975), mean=m, sd=v)
+I_eta
+```
+Since the transformation $\eta = \eta(\theta)$ is monotonically increasing, if $I_{\eta}$ is the CI for $\eta$, then the corresponding CI for $\theta$  $I_{\eta} = \eta^{-1}(I)$.
+```{r}
+eta_inv <- function(eta) exp(eta) / (1 + exp(eta))
+I_theta <- eta_inv(I_eta)
+I_theta
+```
+
+> - Design an Accept-Reject sampling algorithm for simulating from the posterior density $\eta$. Use a $t$ proposal density using a small number of degrees of freedom and mean and scale parameters given by the normal approximation.
+
+We can use a student-t with 3 degrees of freedom because it has finite mean and variance.
+
+Then, we need $M$ such that $\bar{g} \le Mq$ or equivalently $M \ge \frac{\bar{g}}{q}$. So we can take $M = \max_{\eta} \frac{\bar{g}}{q}$.
+
+```{r}
+library(mnormt)
+M <- optimize(function(e) g_bar2(e) / dmt(e, mean=m, S=v, df=3), interval = c(0, 1), maximum = TRUE)$objective
+M
+```
+We can plot the two densities to verify that $\bar{g}$ is below $M\cdot q$.
+
+```{r}
+plot(ee, M*dmt(ee, mean=m, S=v, df=3), type='l', col='red', lwd=2, xlab=TeX(r"($\eta$)"), ylab = 'Density')
+lines(ee, g_bar2(ee), lwd=2)
+legend(x='topright', legend=c(TeX(r"($Mq$)"), TeX(r"($\bar{g}$)")), lty=1, col=c("red", "black"))
+```
+
+
+```{r}
+sampler_AR2 <- function(N){
+  # returns N samples from our posterior distribution (g).
+  samples <- rep(0, N)
+  num_samples <- 0
+  while (num_samples < N) {
+    e <- rmt(1, mean=m, S=v, df=3)
+    u <- runif(1)
+    if (u * M*dmt(e, mean=m, S=v, df=3) < g_bar2(e)){
+      num_samples <- num_samples + 1
+      samples[num_samples] <- e
+    }
+  }
+  return(samples)
+}
+```
+
+> - Compare the results of the two procedures.
+
+We can have a visual comparison of the two procedure by comparing the plots of the density of the normal, the histogram of a lot of samples from the AR algorithm and the density of the true distribution.
+
+```{r}
+N <- 10000
+g_AR2 <-  sampler_AR2(N)
+hist(g_AR2, main = 'Comparison of the two methods', xlab = expression(eta), breaks = 50, freq = FALSE)
+
+ee <- seq(min(g_AR2), max(g_AR2), 0.01)
+g_ee <- g_bar2(ee) / integrate(function(e) g_bar2(e),-3, 3)$value
+lines(ee, g_ee, col=, lwd=3)
+lines(ee, dnorm(ee, mean=m, sd=v), lty='dashed', col='red', lwd=3)
+
+legend(x='topright', legend=c("True density", "Normal approximation"), lty=1:2, col=c("black", "red"))
+```
+
+We can see that both methods are very good approximations.
+
+# Exercise 3: Poisson Regression
+Consider an experiment involving subjects reporting one stressful event. The collected data $y_{1}, \cdots, y_{18}$ where $y_{i}$ is the number of events recalled $i$ months before the interview. Suppose $y_i$ is Poisson distributed with mean $\lambda_i$, where the $\lambda_i$s satisfy the loglinear regression model
+
+$$
+\log \lambda_i = \beta_0 +\beta_1 i \ .
+$$    
+
+The data are shown in the following table
+
+```{r echo=FALSE}  
+x <- c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+y <- c(15, 11, 14, 17, 5, 11, 10, 4, 8, 10, 7, 9, 11, 3, 6, 1, 1, 4)
+d <- data.frame(x,y)
+names <- c("Months", "$y_i$")
+knitr::kable(d)
+```
+  
+If $(\beta_0, \beta_1)$ is assigned a uniform prior, then the log of the posterior density is given, up to an additive constant, by
+
+$$
+\log(g(\beta_0, \beta_1  \vert  data)) \propto \sum_{i=1}^{18} \left[ y_i (\beta_0 + \beta_1 i ) - \exp(\beta_0 + \beta_1 i) \right]
+$$     
+
+> - Write an R function to compute the log of the posterior density of $(\beta_0, \beta_1)$.
+```{r}
+log_post <- function(beta){
+  i <- 1:18
+return(sum(y*(beta[1] + beta[2]*i) - exp(beta[1] + beta[2]*i)))
+}
+```
+
+> - Suppose we are interested in estimating the posterior mean and standard deviation for the slope $\beta_1$. Approximate these moments by a normal approximation about the posterior mode.
+
+Since we are approximating the bivariate posterior with a normal $\mathcal{N}(m = (m_0, m_1), V)$, then the marginal of $\beta_1$ is a normal of mean $m_1$ and variance $V[2, 2]$.
+
+The function `optim` that we use to compute the mode and the hessian of the posterior needs a starting point. In order to get one, we can fit a line to the data, in the log scale.
+
+```{r}
+library(stats)  # To fit the line to the data.
+
+fitted_line <- glm(log(y) ~ x)
+beta_start <- fitted_line[1]$coefficients
+normal_param <- optim(par = beta_start, fn = log_post, hessian=TRUE, control=list(fnscale=-1))
+mode_beta <- normal_param$par
+V <- - solve(normal_param$hessian) # Covariance matrix of the posterior.
+
+mean_beta1_norm <- mode_beta[2]
+sd_beta1_norm <- sqrt(V[2, 2])
+```
+
+For the normal approximation of $\beta_1$, the mean is `r mean_beta1_norm` and standard deviation is `r sd_beta1_norm`.
+
+> - Use a multivariate $t$ proposal density and the SIR algorithm to simulate 1000 draws from the posterior density. Use this sample to estimate the posterior mean and standard deviation of the slope $\beta_1$.
+
+The SIR algorithm for the bivariate case is very easy to implement.
+
+```{r}
+log_post_vec <- function(beta){
+  # Same as log_post, but takes a matrix as input.
+  sum_1_18 <- 0
+  for (i in 1:18) {
+    sum_1_18 <- sum_1_18 + y[i]*(beta[,1] + beta[,2]*i) - exp(beta[,1] + beta[,2]*i)
+  }
+return(sum_1_18)
+}
+sampler_SIR3 <- function(N){
+  # Sampling
+  beta <- rmt(N, mean=mode_beta, S=V, df=3)
+  # Importance
+  # To avoid problems with float precision I subtract 174 from log_post_vec(beta).
+  w <- exp(log_post_vec(beta) - 174 - log(dmt(beta, mean=mode_beta, S=V, df=3)))
+  w <- w / sum(w)
+  # Resampling
+  idx <- sample(1:N, size=N, replace=TRUE, prob=w)
+return(beta[idx,])
+}
+```
+
+We can use the sampler to estimate the posterior mean and standard deviation of $\beta_1$.
+```{r}
+g_SIR3 <- sampler_SIR3(1000)
+mean_beta1_SIR <- mean(g_SIR3[,2])
+sd_beta1_SIR <- sd(g_SIR3[,2])
+```
+
+The SIR approximation for the mean is `r mean_beta1_SIR` and for the standard deviation is `r sd_beta1_SIR`.
+
+> - Compare your estimates with the estimates using the normal approximation.
+
+We can compute the difference between the parameters obtained with the two approximations.
+```{r}
+mean_beta1_SIR - mean_beta1_norm
+```
+```{r}
+sd_beta1_SIR - sd_beta1_norm
+```
+The two approximations are very close.
+
+
+# Exercise 4:  Variance components model
+
+Consider the data concerning batch-to-batch variation in yields of dyestuff. The following data arise from a balanced experiment whereby the total product yield was determined for five samples from each of six randomly chosen batches of raw material.
+
+```{r echo=FALSE}  
+y <- c(1545, 1440, 1440, 1520, 1580, 1540, 1555, 1490, 1560, 1495, 1595, 1550, 1605, 1510, 1560, 1445, 1440, 1595, 1465, 1545, 1595, 1630, 1515, 1635, 1625, 1520, 1455, 1450, 1480, 1445)
+y <- matrix(y, ncol=5, byrow=TRUE)
+dimnames(y) <- list(1:6, paste0("S", 1:5))  
+knitr::kable(y, row.names=TRUE)      
+```
+
+Let $y_{ij}$ denote the $j$th observation in batch $i$. To determine the relative importance of between-batch variation versus sampling variation, the following multilevel model is applied ($N$ denotes the number of batches and $n$ denotes the number of observations per batch).
+
+- $y_{ij} \sim N(\mu + b_i, \sigma_y)$, $i=1,\ldots,N$, $j=1,\ldots,n$.
+- $b_i \sim N(0, \sigma_b)$, $i=1,\ldots,N$.
+- $(\sigma^2_y, \sigma^2_b)$ is assigned a uniform prior.
+
+In this situation, the focus is on the marginal posterior distribution of the variance components. It is possible to analytically integrate out the random effects $b_i$s, resulting in the marginal posterior density of $(\mu, \sigma^2_y, \sigma^2_b)$ given, up to a proportionally constant, by
+
+$$
+\prod_{i=1}^N \left[ \phi\left( \bar{y}_i  \vert  \mu, \sqrt{\sigma^2_y/n + \sigma^2_b} \right) f_G\left( S_i  \vert  (n-1)/2, 1/(2 \sigma^2_y) \right) \right] \ , 
+$$
+
+where $\hat{y}_i$ and $S_i$ are respectively the mean yield and the "within sum of squares" of the $i$th batch, $\phi\left(y  \vert  \mu,\sigma\right)$ is the normal density of mean $\mu$ and standard deviation $\sigma$, and $f_G(y  \vert  a,b)$ is the gamma density proportional to $y^{a-1} \exp( - b y)$.
+
+>- Write an R function for the log of the posterior density with parametrization $\theta = (\mu, \log\sigma_y, \log\sigma_b)$.
+
+We have to consider the transformation
+$$
+h : (\mu, \sigma^2_y, \sigma^2_b) \to \left(\mu, \frac{1}{2}\log(\sigma^2_y), \frac{1}{2}\log(\sigma^2_b) \right) = (\mu, \log(\sigma_y), \log(\sigma_b)) =: \theta
+$$
+that has inverse
+$$
+h^{-1} (\mu, \log(\sigma_y), \log(\sigma_b)) \to  \left(\mu, e^{2\log(\sigma_y)}, e^{2\log(\sigma_b)}\right)
+$$
+
+The determinant of the Jacobian is
+$$
+|J| =
+\begin{vmatrix}
+1 & 0 & 0 \\
+0 & \frac{1}{2\sigma^2_y} & 0 \\
+0 & 0 & \frac{1}{2\sigma^2_b}
+\end{vmatrix}	
+= \frac{1}{4\sigma^2_y\sigma^2_b}
+$$
+so $|J^{-1}| = 4\sigma^2_y\sigma^2_b$. The log of the posterior density of theta, up to an additive constant, is
+
+
+\begin{align}
+\log\left(g(\theta \vert y)\right) & \propto \sum_{i=1}^N
+\log\left(\phi\left( \bar{y}_i  \vert  \mu, \sqrt{e^{2\log(\sigma_y)}/n + e^{2\log(\sigma_y)}} \right)\right) + 
+\log\left(f_G\left( S_i  \vert  (n-1)/2, 1/(2 e^{2\log(\sigma_y)}) \right)\right) + 
+\log\left(4 e^{2\log(\sigma_y)}e^{2\log(\sigma_b)} \right ) \\
+& \propto \sum_{i=1}^N
+-\log(\sigma_y) -\frac{1}{2}\frac{(\bar{y}_i-\mu)^2}{e^{2\log(\sigma_y)}/n + e^{2\log(\sigma_y)}} + 
+\frac{n-3}{2}\log(S_i) - \frac{S_i}{2e^{2\log(\sigma_y)}} + 2\log(\sigma_y) + 2\log(\sigma_b)
+
+\end{align}
+
+Before writing the R function for the log of the posterior density of $\theta$ I compute $\bar{y}_i$ and $S_i$.
+```{r}
+y_bar <- rowMeans(y)
+S <- rowSums((y - y_bar)^2)
+```
+
+Now we can write the function
+```{r}
+log_post_theta <- function(theta, y_bar_=y_bar, S_=S){
+  mu <- theta[1]
+  sig2y <- exp(2*theta[2])
+  sig2b <- exp(2* theta[3])
+  
+  log_phi <- dnorm(y_bar_, mu, sqrt(sig2y/5+sig2b),log=TRUE)
+  log_fG <- dgamma(S_, shape = 2, rate = 1/(2*sig2y), log=TRUE)
+  return( sum(log_phi + log_fG) + log(4*sig2y*sig2b) )
+}
+```
+> - Using a normal approximation, to this aim, find the posterior mode of $\theta$ using a numerical method and try the following alternative starting values:
+>   - $\theta=(1500, 3, 3)$
+>   - $\theta=(1500, 1, 1)$
+>   - $\theta=(1500, 10, 10)$
+>
+>and assess the sensitivity of the numerical method to the starting value.
+     
+As always, we can compute the posterior mode using the function `optim`.
+
+```{r}
+laplace3 <- optim(c(1500, 3, 3), log_post_theta, hessian = TRUE, control = list(fnscale=-1)) 
+laplace1 <- optim(c(1500, 1, 1), log_post_theta, hessian = TRUE, control = list(fnscale=-1)) 
+laplace10<- optim(c(1500,10,10), log_post_theta, hessian = TRUE, control = list(fnscale=-1)) 
+
+mode <- rbind(laplace3$par, laplace1$par, laplace10$par)
+rownames(mode) <- c("(1500,  3,  3) ", "(1500,  1,  1) ", "(1500, 10, 10) " )
+colnames(mode) <- c("mu  ", " log(sigma_y)", " log(sigma_b)")
+
+print(mode)
+```
+An estimate of the sensitivity to the starting value is the following ratio:
+
+```{r}
+d_g <- norm(laplace3$par - laplace1$par, type='2')
+d_theta <- norm(c(1500, 3, 3)- c(1500, 1, 1), type='2')
+sensitivity <- d_g / d_theta
+sensitivity
+```
+>- Use the normal approximation to find $90\%$ interval estimates for the log of the standard deviation $\log\sigma_y$, $\log\sigma_b$.
+
+We can use the estimate of the mode and the hessian obtained with the first starting value. Thus, the parameters of our normal are:
+
+```{r}
+m <- laplace3$par
+V <- - solve(laplace3$hessian)
+```
+
+So an estimate of the $90\%$ confidence interval for $\log\sigma_y$ is
+```{r}
+I_log_sigy <- qnorm(c(0.05, 0.95), mean=m[2], sd=sqrt(V[2, 2]))
+I_log_sigy
+```
+
+while for $\log\sigma_b$ is
+```{r}
+I_log_sigb <- qnorm(c(0.05, 0.95), mean=m[3], sd=sqrt(V[3, 3]))
+I_log_sigb
+```
+
+>- Using the results from the previous point find $90\%$ interval estimates for the variance components $\sigma_y^2$, $\sigma_b^2$.
+
+If $\sigma>0$, then $a \le \log(\sigma) \le b \iff e^{2a} \le \sigma^2 \le e^{2b}$. So the confidence interval for $\sigma_y^2$ is
+```{r}
+exp(2 * I_log_sigy)
+```
+
+while for $\sigma_b^2$ is
+```{r}
+exp(2 * I_log_sigb)
+```
+
+
+
+
